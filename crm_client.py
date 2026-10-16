@@ -8,13 +8,13 @@ load_dotenv()
 
 class CRMClient:
     def __init__(self, base_url: str = None, app_key: str = None, secret_key: str = None):
-        self.base_url = (base_url or os.getenv("CRM_BASE_URL", "https://crm.ilogo.id/api/v1")).rstrip("/")
+        self.base_url = (base_url or os.getenv("CRM_BASE_URL", "")).rstrip("/")
         self.app_key = app_key or os.getenv("CRM_APP_KEY", "")
         self.secret_key = secret_key or os.getenv("CRM_SECRET_KEY", "")
 
     def is_configured(self) -> bool:
-        """Check if API keys are set and not placeholder values."""
-        if not self.app_key or not self.secret_key:
+        """Check if base URL and API keys are set and not placeholder values."""
+        if not self.base_url or not self.app_key or not self.secret_key:
             return False
         if "your_" in self.app_key.lower() or "your_" in self.secret_key.lower():
             return False

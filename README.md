@@ -1,6 +1,6 @@
 # CRM API Explorer
 
-Tool to query and explore the iLogo CRM API (`https://crm.ilogo.id/api/v1`).
+Tool to query and explore the CRM API.
 
 ---
 
@@ -29,7 +29,7 @@ Select an option [Default: 1]:
 
 Credentials are automatically loaded from `.env`:
 ```env
-CRM_BASE_URL=https://crm.ilogo.id/api/v1
+CRM_BASE_URL=https://your-crm-domain.com/api/v1
 CRM_APP_KEY=your_actual_x_app_key
 CRM_SECRET_KEY=your_actual_x_secret_key
 ```
