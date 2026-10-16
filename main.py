@@ -81,10 +81,11 @@ def main():
         print("  9. Deals List                (GET /deals)")
         print(" 10. Lead History              (GET /leads/{id}/history)")
         print(" 11. Custom Endpoint Path")
+        print(" 12. Open Web Dashboard        (Streamlit)")
         print("  0. Exit")
 
         try:
-            choice = clean_input("\nEnter choice (0-11): ")
+            choice = clean_input("\nEnter choice (0-12): ")
         except (EOFError, KeyboardInterrupt):
             print("\nExiting. Happy querying!")
             sys.exit(0)
@@ -173,8 +174,22 @@ def main():
                 print("\nSending request...")
                 resp = client.request(custom_path, params={"per_page": per_page, "page": page})
 
+            elif choice == "12":
+                print("\nLaunching Web Dashboard in your browser (Ctrl+C to return to menu)...")
+                streamlit_exe = os.path.join(os.path.dirname(sys.executable), "streamlit.exe")
+                if not os.path.exists(streamlit_exe):
+                    streamlit_exe = "streamlit"
+                try:
+                    import subprocess
+                    subprocess.run([streamlit_exe, "run", "app.py"])
+                except KeyboardInterrupt:
+                    print("\nDashboard stopped.")
+                except Exception as e:
+                    print(f"Error launching dashboard: {e}")
+                continue
+
             else:
-                print("Invalid choice, please select between 0 and 11.")
+                print("Invalid choice, please select between 0 and 12.")
                 continue
 
             if resp is not None:
