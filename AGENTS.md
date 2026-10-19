@@ -52,6 +52,7 @@ flowchart TD
 ## Key Directories
 The project is intentionally structured as a flat, minimal Python project:
 - **`.` (Root)**: All source modules (`crm_client.py`, `app.py`, `main.py`), configs, launcher, and docs.
+- **`tests/`**: Automated unit and headless integration test suite (`test_crm_client.py`, `test_app.py`).
 - **`.venv/`**: Local Python virtual environment (ignored by Git; binaries in `.venv\Scripts\`).
 - **`__pycache__/`**: Python bytecode artifacts (ignored by Git).
 
@@ -82,8 +83,11 @@ python -m venv .venv
 
 ### Linting, Compilation & Verification
 ```powershell
+# Run full automated test suite (15 unit & integration tests)
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+
 # Compile all source files to verify syntax
-.\.venv\Scripts\python.exe -m py_compile app.py crm_client.py main.py
+.\.venv\Scripts\python.exe -m py_compile app.py crm_client.py main.py tests\test_crm_client.py tests\test_app.py
 
 # Verify client configuration & auth loading via one-liner
 .\.venv\Scripts\python.exe -c "from crm_client import CRMClient; c = CRMClient(); print('Configured:', c.is_configured())"
@@ -147,6 +151,8 @@ python -m venv .venv
 | `requirements.txt` | Dependencies | Pinned production dependencies (`requests`, `python-dotenv`, `streamlit`, `pandas`). |
 | `.env.example` | Config Template | Template containing `CRM_BASE_URL`, `CRM_APP_KEY`, and `CRM_SECRET_KEY`. |
 | `.env` | Active Config | Local environment credentials (Git-ignored). |
+| `tests/test_crm_client.py` | Unit Tests | Client tests mocking `requests.Session` for 429 backoff, paging, and params. |
+| `tests/test_app.py` | UI Tests | Headless Streamlit `AppTest` suite testing cache hits, pagination, and bulk export. |
 | `.gitignore` | Exclusion Rules | Protects `.env`, virtual environments (`.venv/`), and cache files. |
 | `README.md` | Documentation | Quickstart guide, feature catalog, and manual execution commands. |
 
@@ -163,45 +169,29 @@ python -m venv .venv
 ## Testing & QA
 
 ### Testing Strategy
-- The repository does not maintain a checked-in `tests/` directory; testing is performed via live smoke checks and headless evaluation.
-- When adding or validating features, use the built-in headless **`streamlit.testing.v1.AppTest`** to simulate user interactions without launching a browser:
+- The repository maintains an automated, zero-dependency test suite under **`tests/`** using standard `unittest` and Streamlit's built-in **`streamlit.testing.v1.AppTest`**.
+- All tests mock HTTP sessions and run hermetically offline in $<2$ seconds without burning API rate limits or requiring active credentials.
 
-```python
-from streamlit.testing.v1 import AppTest
+### Running Tests
+```powershell
+# Run all unit and integration tests with verbose output
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
 
-# Headless integration test
-at = AppTest.from_file("app.py", default_timeout=30)
-at.run()
-assert not at.exception
+# Run only client unit tests
+.\.venv\Scripts\python.exe -m unittest tests/test_crm_client.py
 
-# Click Fetch Data
-at.sidebar.button[0].click()
-at.run()
-assert at.session_state.last_meta["status_code"] == 200
-
-# Test pagination button
-next_btn = [b for b in at.button if "Next" in b.label][0]
-next_btn.click()
-at.run()
-assert at.session_state.page_number == 2
+# Run only Streamlit headless UI integration tests
+.\.venv\Scripts\python.exe -m unittest tests/test_app.py
 ```
 
-### Client Unit Testing Pattern
-When writing tests for `CRMClient`, mock `requests.Session.get` using `unittest.mock` to verify rate-limiting and 429 retries:
-```python
-import unittest
-from unittest.mock import patch, MagicMock
-from crm_client import CRMClient
-
-class TestCRMClient(unittest.TestCase):
-    @patch("requests.Session.get")
-    def test_rate_limit_backoff(self, mock_get):
-        resp_429 = MagicMock(status_code=429, headers={"Retry-After": "1"})
-        resp_200 = MagicMock(status_code=200)
-        resp_200.json.return_value = {"data": [], "meta": {"last_page": 1}}
-        mock_get.side_effect = [resp_429, resp_200]
-
-        client = CRMClient(base_url="https://crm.test/api/v1", app_key="k", secret_key="s")
-        records, _ = client.fetch_all("organizations")
-        self.assertEqual(mock_get.call_count, 2)
-```
+### Test Coverage & Modules
+1. **`tests/test_crm_client.py` (Unit Tests)**:
+   - Validates credential checking (`is_configured()`), header formatting, and query sanitization.
+   - Mocks `requests.Session.get` to test `iter_pages` pagination, per-page ceiling clamping ($\le 100$), and `HTTP 429 Retry-After` exponential backoff.
+   - Validates `fetch_all` multi-page aggregation and progress callback tracking.
+2. **`tests/test_app.py` (UI Integration Tests)**:
+   - Headless Streamlit integration testing via `AppTest.from_file`.
+   - Verifies initial widget render, tabular dataframe normalization, and telemetry metrics.
+   - Verifies interactive pagination transitions (`⏮️ First`, `⬅️ Prev`, `Next ➡️`, `Last ⏭️`).
+   - Verifies in-memory TTL session cache hits (`from_cache: True`) on page revisits and cache bypass on `🔄 Refresh`.
+   - Tests multi-page bulk exporter execution and download button generation.

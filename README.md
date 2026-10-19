@@ -67,3 +67,13 @@ For quick command-line querying without opening a browser:
 - **Deals**: List (`/deals`)
 - **Custom Endpoint**: Query any custom path directly
 - **Option 12**: Launch the Web Dashboard directly from within the terminal
+
+---
+
+## 3. Running Automated Tests
+
+Run the zero-dependency test suite (15 unit and headless integration tests):
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+```
+Tests run hermetically in $<2$ seconds without burning API rate limits.
