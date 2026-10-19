@@ -27,12 +27,26 @@ st.markdown(
 # Initialize API Client
 client = CRMClient()
 
-# Initialize session state for query caching
+# Initialize session state for query caching and pagination
 if "last_response" not in st.session_state:
     st.session_state.last_response = None
 if "last_meta" not in st.session_state:
     st.session_state.last_meta = None
+if "page_number" not in st.session_state:
+    st.session_state.page_number = 1
+if "trigger_fetch" not in st.session_state:
+    st.session_state.trigger_fetch = False
 
+
+def navigate_page(target_page: int):
+    st.session_state.page_number = target_page
+    st.session_state.trigger_fetch = True
+
+
+def on_endpoint_change():
+    st.session_state.page_number = 1
+    st.session_state.last_response = None
+    st.session_state.last_meta = None
 # Sidebar - Settings & Query Builder
 st.sidebar.title("⚡ CRM Explorer")
 st.sidebar.caption(f"Base URL: `{client.base_url}`")
@@ -60,7 +74,7 @@ ENDPOINT_OPTIONS = {
     "Custom Endpoint": {"category": "custom", "type": "custom"},
 }
 
-selected_label = st.sidebar.selectbox("Endpoint", list(ENDPOINT_OPTIONS.keys()))
+selected_label = st.sidebar.selectbox("Endpoint", list(ENDPOINT_OPTIONS.keys()), on_change=on_endpoint_change)
 endpoint_config = ENDPOINT_OPTIONS[selected_label]
 
 # Dynamic Inputs based on selected endpoint
@@ -72,7 +86,7 @@ if endpoint_config["type"] == "detail":
     if endpoint_config["category"] == "organizations":
         id_value = st.sidebar.text_input("Organization ID", value="8509")
         endpoint_path = f"organizations/{id_value}"
-        per_page = st.sidebar.number_input("Per Page", min_value=1, max_value=250, value=25)
+        per_page = st.sidebar.number_input("Per Page", min_value=1, max_value=100, value=25)
         params["per_page"] = per_page
     elif endpoint_config["category"] == "clients":
         id_value = st.sidebar.text_input("Client ID", value="6920")
@@ -80,8 +94,8 @@ if endpoint_config["type"] == "detail":
 
 elif endpoint_config["type"] == "purchases":
     id_value = st.sidebar.text_input("Client ID", value="6920")
-    per_page = st.sidebar.number_input("Per Page", min_value=1, max_value=250, value=25)
-    page = st.sidebar.number_input("Page", min_value=1, value=1)
+    per_page = st.sidebar.number_input("Per Page", min_value=1, max_value=100, value=25)
+    page = st.sidebar.number_input("Page", min_value=1, step=1, key="page_number")
     endpoint_path = f"clients/{id_value}/purchases"
     params = {"per_page": per_page, "page": page}
 
@@ -90,21 +104,22 @@ elif endpoint_config["type"] == "history":
     endpoint_path = f"leads/{id_value}/history"
 
 elif endpoint_config["type"] == "list":
-    per_page = st.sidebar.number_input("Per Page", min_value=1, max_value=250, value=25)
-    page = st.sidebar.number_input("Page", min_value=1, value=1)
+    per_page = st.sidebar.number_input("Per Page", min_value=1, max_value=100, value=25)
+    page = st.sidebar.number_input("Page", min_value=1, step=1, key="page_number")
     params = {"per_page": per_page, "page": page}
     endpoint_path = endpoint_config["category"]
 
 elif endpoint_config["type"] == "custom":
     endpoint_path = st.sidebar.text_input("Endpoint Path", value="organizations")
-    per_page = st.sidebar.number_input("Per Page", min_value=1, max_value=250, value=25)
-    page = st.sidebar.number_input("Page", min_value=1, value=1)
+    per_page = st.sidebar.number_input("Per Page", min_value=1, max_value=100, value=25)
+    page = st.sidebar.number_input("Page", min_value=1, step=1, key="page_number")
     params = {"per_page": per_page, "page": page}
 
 # Fetch button
 fetch_clicked = st.sidebar.button("🚀 Fetch Data", type="primary", use_container_width=True)
 
-if fetch_clicked:
+if fetch_clicked or st.session_state.get("trigger_fetch"):
+    st.session_state.trigger_fetch = False
     with st.spinner(f"Querying `{endpoint_path}`..."):
         start_time = time.time()
         try:
@@ -187,6 +202,65 @@ if st.session_state.last_response is not None:
                 st.info("Please inspect the raw payload in the JSON Tree tab.")
         else:
             st.info("Response is not tabular or is empty. View the JSON Tree tab.")
+
+        # Pagination Controls below table
+        meta_info = data.get("meta") if isinstance(data, dict) else None
+        if meta_info and "current_page" in meta_info and "last_page" in meta_info:
+            cur_p = max(1, int(meta_info.get("current_page", 1)))
+            last_p = max(1, int(meta_info.get("last_page", 1)))
+            total_recs = meta_info.get("total")
+
+            st.markdown("---")
+            nav_col1, nav_col2, nav_col3, nav_col4, nav_col5 = st.columns([1, 1.2, 2.5, 1.2, 1])
+
+            with nav_col1:
+                st.button(
+                    "⏮️ First",
+                    key="btn_first_page",
+                    disabled=(cur_p <= 1),
+                    use_container_width=True,
+                    on_click=navigate_page,
+                    args=(1,),
+                )
+
+            with nav_col2:
+                st.button(
+                    "⬅️ Previous",
+                    key="btn_prev_page",
+                    disabled=(cur_p <= 1),
+                    use_container_width=True,
+                    on_click=navigate_page,
+                    args=(cur_p - 1,),
+                )
+
+            with nav_col3:
+                total_text = f" ({total_recs:,} records total)" if total_recs is not None else ""
+                st.markdown(
+                    f"<div style='text-align: center; line-height: 2.2; font-weight: 500; font-size: 14px;'>"
+                    f"Page <b style='color: #00d26a;'>{cur_p}</b> of <b>{last_p}</b>{total_text}"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+
+            with nav_col4:
+                st.button(
+                    "Next ➡️",
+                    key="btn_next_page",
+                    disabled=(cur_p >= last_p),
+                    use_container_width=True,
+                    on_click=navigate_page,
+                    args=(cur_p + 1,),
+                )
+
+            with nav_col5:
+                st.button(
+                    "Last ⏭️",
+                    key="btn_last_page",
+                    disabled=(cur_p >= last_p),
+                    use_container_width=True,
+                    on_click=navigate_page,
+                    args=(last_p,),
+                )
 
     with tab_json:
         if isinstance(data, (dict, list)):
