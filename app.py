@@ -42,7 +42,16 @@ if "force_refresh" not in st.session_state:
     st.session_state.force_refresh = False
 if "page_cache" not in st.session_state:
     st.session_state.page_cache = {}
-
+if "selected_endpoint" not in st.session_state:
+    st.session_state.selected_endpoint = "Organizations (List)"
+if "org_id_input" not in st.session_state:
+    st.session_state.org_id_input = "8509"
+if "client_id_input" not in st.session_state:
+    st.session_state.client_id_input = "6920"
+if "lead_id_input" not in st.session_state:
+    st.session_state.lead_id_input = "36"
+if "nav_breadcrumbs" not in st.session_state:
+    st.session_state.nav_breadcrumbs = []
 
 def make_cache_key(endpoint: str, query_params: dict) -> str:
     sorted_items = sorted((str(k), str(v)) for k, v in (query_params or {}).items() if v is not None)
@@ -78,7 +87,255 @@ def on_endpoint_change():
     st.session_state.page_number = 1
     st.session_state.last_response = None
     st.session_state.last_meta = None
+    st.session_state.nav_breadcrumbs = []
 
+
+def drill_down_to(endpoint_label: str, target_id: str | int = None):
+    current_entry = {
+        "label": st.session_state.get("selected_endpoint", "Organizations (List)"),
+        "page": st.session_state.get("page_number", 1),
+        "org_id": st.session_state.get("org_id_input", "8509"),
+        "client_id": st.session_state.get("client_id_input", "6920"),
+        "lead_id": st.session_state.get("lead_id_input", "36"),
+    }
+    st.session_state.nav_breadcrumbs.append(current_entry)
+
+    st.session_state.selected_endpoint = endpoint_label
+    st.session_state.page_number = 1
+    if target_id is not None:
+        target_str = str(target_id)
+        if "Organization" in endpoint_label:
+            st.session_state.org_id_input = target_str
+        elif "Client" in endpoint_label:
+            st.session_state.client_id_input = target_str
+        elif "Lead" in endpoint_label:
+            st.session_state.lead_id_input = target_str
+
+    st.session_state.trigger_fetch = True
+
+
+def go_back_breadcrumb():
+    if st.session_state.nav_breadcrumbs:
+        prev = st.session_state.nav_breadcrumbs.pop()
+        st.session_state.selected_endpoint = prev["label"]
+        st.session_state.page_number = prev.get("page", 1)
+        if "org_id" in prev and prev["org_id"]:
+            st.session_state.org_id_input = prev["org_id"]
+        if "client_id" in prev and prev["client_id"]:
+            st.session_state.client_id_input = prev["client_id"]
+        if "lead_id" in prev and prev["lead_id"]:
+            st.session_state.lead_id_input = prev["lead_id"]
+        st.session_state.trigger_fetch = True
+
+
+def extract_record_relations(record: dict, endpoint_cat: str = "") -> dict:
+    if not isinstance(record, dict):
+        return {}
+
+    relations = {}
+
+    # Organization relation
+    if "organization" in endpoint_cat and record.get("id"):
+        relations["org"] = {
+            "id": record.get("id"),
+            "name": record.get("company_name", f"Org #{record.get('id')}"),
+            "is_self": True,
+        }
+    elif isinstance(record.get("organization"), dict) and record["organization"].get("id"):
+        relations["org"] = {
+            "id": record["organization"].get("id"),
+            "name": record["organization"].get("company_name", f"Org #{record['organization'].get('id')}"),
+            "is_self": False,
+        }
+    elif record.get("organization_id"):
+        relations["org"] = {
+            "id": record.get("organization_id"),
+            "name": f"Org #{record.get('organization_id')}",
+            "is_self": False,
+        }
+
+    # Customer / Client relation
+    if "client" in endpoint_cat and record.get("id"):
+        relations["client"] = {
+            "id": record.get("id"),
+            "name": record.get("pic_name") or record.get("name") or f"Client #{record.get('id')}",
+            "is_self": True,
+        }
+    elif isinstance(record.get("customer"), dict) and record["customer"].get("id"):
+        relations["client"] = {
+            "id": record["customer"].get("id"),
+            "name": record["customer"].get("name") or record["customer"].get("pic_name") or f"Client #{record['customer'].get('id')}",
+            "is_self": False,
+        }
+    elif isinstance(record.get("client"), dict) and record["client"].get("id"):
+        relations["client"] = {
+            "id": record["client"].get("id"),
+            "name": record["client"].get("pic_name") or record["client"].get("name") or f"Client #{record['client'].get('id')}",
+            "is_self": False,
+        }
+    elif record.get("client_id"):
+        relations["client"] = {
+            "id": record.get("client_id"),
+            "name": f"Client #{record.get('client_id')}",
+            "is_self": False,
+        }
+
+    # Lead / Deal pipeline relation
+    if "lead" in endpoint_cat and record.get("id"):
+        relations["lead"] = {"id": record.get("id"), "is_self": True}
+    elif "deal" in endpoint_cat and record.get("id"):
+        relations["lead"] = {"id": record.get("id"), "is_self": True}
+    elif record.get("lead_id"):
+        relations["lead"] = {"id": record.get("lead_id"), "is_self": False}
+
+    return relations
+
+
+def render_entity_inspector(data, table_records, endpoint_config, key_prefix="inspect"):
+    if not table_records:
+        st.info("No records available to inspect.")
+        return
+
+    st.markdown("#### 🔗 Related Entity Inspector & Drill-Down")
+    st.caption("Select any record below (or click a table row above) to view linked organizations, clients, purchases, and lead histories:")
+
+    selected_rec = None
+    if len(table_records) > 1:
+        def format_record(idx):
+            r = table_records[idx]
+            rid = r.get("id", idx + 1)
+            name = (
+                r.get("title")
+                or r.get("company_name")
+                or r.get("pic_name")
+                or r.get("name")
+                or r.get("product")
+                or "Record"
+            )
+            extra = f" [{r.get('status')}]" if r.get("status") else ""
+            return f"#{rid} - {name}{extra}"
+
+        current_choice = st.session_state.get(f"{key_prefix}_record_selector", 0)
+        if not isinstance(current_choice, int) or current_choice >= len(table_records):
+            current_choice = 0
+
+        chosen_idx = st.selectbox(
+            "Select a record from this page to inspect linked entities:",
+            range(len(table_records)),
+            index=current_choice,
+            format_func=format_record,
+            key=f"{key_prefix}_record_selector",
+        )
+        selected_rec = table_records[chosen_idx]
+    else:
+        selected_rec = table_records[0]
+
+    rels = extract_record_relations(selected_rec, endpoint_config.get("category", ""))
+    is_detail_view = endpoint_config.get("type") == "detail"
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.markdown("##### 🏢 Organization")
+        if "org" in rels:
+            org_id = rels["org"]["id"]
+            org_name = rels["org"]["name"]
+            is_self = rels["org"].get("is_self", False)
+            st.caption(f"**{org_name}** (`ID: {org_id}`)")
+            if is_self and is_detail_view:
+                st.info("Currently viewing this organization.")
+            else:
+                st.button(
+                    f"🏢 View Org #{org_id} Details",
+                    key=f"{key_prefix}_btn_org_{org_id}",
+                    on_click=drill_down_to,
+                    args=("Organization (Detail by ID)", org_id),
+                    use_container_width=True,
+                )
+        else:
+            st.caption("No linked Organization detected.")
+
+    with c2:
+        st.markdown("##### 👤 Client / Customer")
+        if "client" in rels:
+            cid = rels["client"]["id"]
+            cname = rels["client"]["name"]
+            is_self = rels["client"].get("is_self", False)
+            st.caption(f"**{cname}** (`ID: {cid}`)")
+            if not (is_self and is_detail_view):
+                st.button(
+                    f"👤 View Client #{cid}",
+                    key=f"{key_prefix}_btn_cli_{cid}",
+                    on_click=drill_down_to,
+                    args=("Client (Detail by ID)", cid),
+                    use_container_width=True,
+                )
+            st.button(
+                f"🛍️ View Purchases (#{cid})",
+                key=f"{key_prefix}_btn_pur_{cid}",
+                on_click=drill_down_to,
+                args=("Client Purchases", cid),
+                use_container_width=True,
+            )
+        else:
+            st.caption("No linked Client detected.")
+
+    with c3:
+        st.markdown("##### 📜 Lead / History")
+        if "lead" in rels:
+            lid = rels["lead"]["id"]
+            st.caption(f"Lead ID: `{lid}`")
+            if endpoint_config.get("type") == "history":
+                st.info("Currently viewing this lead history.")
+            else:
+                st.button(
+                    f"📜 View Lead #{lid} History",
+                    key=f"{key_prefix}_btn_lead_{lid}",
+                    on_click=drill_down_to,
+                    args=("Lead History (by ID)", lid),
+                    use_container_width=True,
+                )
+        else:
+            st.caption("No linked Lead detected.")
+
+    # Check for embedded clients list in organization detail
+    org_clients = None
+    if isinstance(data, dict):
+        raw_data = data.get("data")
+        if isinstance(raw_data, dict) and isinstance(raw_data.get("clients"), list):
+            org_clients = raw_data.get("clients")
+        elif isinstance(data.get("clients"), list):
+            org_clients = data.get("clients")
+
+    if org_clients:
+        st.markdown("---")
+        st.markdown(f"##### 👥 Associated Clients in this Organization ({len(org_clients)})")
+        st.dataframe(pd.json_normalize(org_clients), use_container_width=True, height=200)
+
+        cl_cols = st.columns([2, 1, 1])
+        with cl_cols[0]:
+            picked_c_idx = st.selectbox(
+                "Select associated client to inspect:",
+                range(len(org_clients)),
+                format_func=lambda i: f"#{org_clients[i].get('id')}: {org_clients[i].get('pic_name', 'Client')}",
+                key=f"{key_prefix}_org_client_choice",
+            )
+        picked_cid = org_clients[picked_c_idx].get("id")
+        with cl_cols[1]:
+            st.button(
+                f"👤 View Client #{picked_cid}",
+                key=f"{key_prefix}_btn_sub_client_{picked_cid}",
+                on_click=drill_down_to,
+                args=("Client (Detail by ID)", picked_cid),
+                use_container_width=True,
+            )
+        with cl_cols[2]:
+            st.button(
+                f"🛍️ Purchases (#{picked_cid})",
+                key=f"{key_prefix}_btn_sub_pur_{picked_cid}",
+                on_click=drill_down_to,
+                args=("Client Purchases", picked_cid),
+                use_container_width=True,
+            )
 # Sidebar - Settings & Query Builder
 st.sidebar.title("⚡ CRM Explorer")
 st.sidebar.caption(f"Base URL: `{client.base_url}`")
@@ -106,7 +363,7 @@ ENDPOINT_OPTIONS = {
     "Custom Endpoint": {"category": "custom", "type": "custom"},
 }
 
-selected_label = st.sidebar.selectbox("Endpoint", list(ENDPOINT_OPTIONS.keys()), on_change=on_endpoint_change)
+selected_label = st.sidebar.selectbox("Endpoint", list(ENDPOINT_OPTIONS.keys()), key="selected_endpoint", on_change=on_endpoint_change)
 endpoint_config = ENDPOINT_OPTIONS[selected_label]
 
 # Dynamic Inputs based on selected endpoint
@@ -116,25 +373,24 @@ id_value = ""
 
 if endpoint_config["type"] == "detail":
     if endpoint_config["category"] == "organizations":
-        id_value = st.sidebar.text_input("Organization ID", value="8509")
+        id_value = st.sidebar.text_input("Organization ID", key="org_id_input")
         endpoint_path = f"organizations/{id_value}"
         per_page = st.sidebar.number_input("Per Page", min_value=1, max_value=100, value=25)
         params["per_page"] = per_page
     elif endpoint_config["category"] == "clients":
-        id_value = st.sidebar.text_input("Client ID", value="6920")
+        id_value = st.sidebar.text_input("Client ID", key="client_id_input")
         endpoint_path = f"clients/{id_value}"
 
 elif endpoint_config["type"] == "purchases":
-    id_value = st.sidebar.text_input("Client ID", value="6920")
+    id_value = st.sidebar.text_input("Client ID", key="client_id_input")
     per_page = st.sidebar.number_input("Per Page", min_value=1, max_value=100, value=25)
     page = st.sidebar.number_input("Page", min_value=1, step=1, key="page_number")
     endpoint_path = f"clients/{id_value}/purchases"
     params = {"per_page": per_page, "page": page}
 
 elif endpoint_config["type"] == "history":
-    id_value = st.sidebar.text_input("Lead ID", value="36")
+    id_value = st.sidebar.text_input("Lead ID", key="lead_id_input")
     endpoint_path = f"leads/{id_value}/history"
-
 elif endpoint_config["type"] == "list":
     per_page = st.sidebar.number_input("Per Page", min_value=1, max_value=100, value=25)
     page = st.sidebar.number_input("Page", min_value=1, step=1, key="page_number")
@@ -207,9 +463,38 @@ if should_run:
 # Main Content Area
 st.title("CRM API Explorer")
 
+# Breadcrumbs navigation bar
+if st.session_state.get("nav_breadcrumbs"):
+    col_bc1, col_bc2 = st.columns([1.5, 6])
+    with col_bc1:
+        prev_crumb = st.session_state.nav_breadcrumbs[-1]
+        st.button(
+            f"⬅️ Back to {prev_crumb['label']}",
+            key="btn_breadcrumb_back",
+            on_click=go_back_breadcrumb,
+            use_container_width=True,
+        )
+    with col_bc2:
+        crumb_titles = [c["label"] for c in st.session_state.nav_breadcrumbs] + [st.session_state.selected_endpoint]
+        st.info(f"📍 Navigation Path: {' ➔ '.join(crumb_titles)}")
+
 if st.session_state.last_response is not None:
     meta = st.session_state.last_meta
     data = st.session_state.last_response
+
+    # Normalize data into table_records list if possible
+    table_records = None
+    if isinstance(data, list):
+        table_records = data
+    elif isinstance(data, dict):
+        if isinstance(data.get("data"), list):
+            table_records = data["data"]
+        elif all(isinstance(v, (str, int, float, bool, type(None))) for v in data.values()):
+            # Single flat object -> key/value table
+            table_records = [{"Field": k, "Value": str(v)} for k, v in data.items()]
+        else:
+            # Wrap single complex object
+            table_records = [data]
 
     # Telemetry metrics row
     col1, col2, col3, col4, col5 = st.columns([1, 1.2, 1, 1, 0.8])
@@ -246,34 +531,36 @@ if st.session_state.last_response is not None:
     # Display Requested URL
     st.code(meta["url"], language="http")
 
-    # Tabs for Dual View
-    tab_table, tab_json, tab_download = st.tabs(["📊 Table View", "🔍 JSON Tree", "💾 Export Data"])
+    # Tabs for Dual View & Entity Inspection
+    tab_table, tab_inspect, tab_json, tab_download = st.tabs([
+        "📊 Table View",
+        "🔗 Entity Inspector",
+        "🔍 JSON Tree",
+        "💾 Export Data",
+    ])
 
     with tab_table:
-        table_records = None
-        if isinstance(data, list):
-            table_records = data
-        elif isinstance(data, dict):
-            if isinstance(data.get("data"), list):
-                table_records = data["data"]
-            elif all(isinstance(v, (str, int, float, bool, type(None))) for v in data.values()):
-                # Single flat object -> key/value table
-                table_records = [{"Field": k, "Value": str(v)} for k, v in data.items()]
-            else:
-                # Wrap single complex object
-                table_records = [data]
-
         if table_records:
             try:
                 df = pd.json_normalize(table_records)
-                st.dataframe(df, use_container_width=True, height=500)
-                st.caption(f"Showing {len(df)} rows and {len(df.columns)} columns. Click column headers to sort or use search icon.")
+                df_event = st.dataframe(
+                    df,
+                    use_container_width=True,
+                    height=450,
+                    on_select="rerun",
+                    selection_mode="single-row",
+                    key="table_df_widget",
+                )
+                st.caption(f"Showing {len(df)} rows and {len(df.columns)} columns. Click any row to inspect relations below, or click headers to sort.")
+                if hasattr(df_event, "selection") and df_event.selection and df_event.selection.rows:
+                    sel_idx = df_event.selection.rows[0]
+                    if 0 <= sel_idx < len(table_records):
+                        st.session_state["table_panel_record_selector"] = sel_idx
             except Exception as e:
                 st.warning(f"Could not convert response to table automatically: {e}")
                 st.info("Please inspect the raw payload in the JSON Tree tab.")
         else:
             st.info("Response is not tabular or is empty. View the JSON Tree tab.")
-
         # Pagination Controls below table
         meta_info = data.get("meta") if isinstance(data, dict) else None
         if meta_info and "current_page" in meta_info and "last_page" in meta_info:
@@ -332,6 +619,14 @@ if st.session_state.last_response is not None:
                     on_click=navigate_page,
                     args=(last_p,),
                 )
+
+        if table_records:
+            st.markdown("---")
+            with st.container(border=True):
+                render_entity_inspector(data, table_records, endpoint_config, key_prefix="table_panel")
+
+    with tab_inspect:
+        render_entity_inspector(data, table_records, endpoint_config, key_prefix="tab_inspect")
 
     with tab_json:
         if isinstance(data, (dict, list)):

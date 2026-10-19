@@ -83,7 +83,7 @@ python -m venv .venv
 
 ### Linting, Compilation & Verification
 ```powershell
-# Run full automated test suite (15 unit & integration tests)
+# Run full automated test suite (17 unit & integration tests)
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 
 # Compile all source files to verify syntax
@@ -195,3 +195,4 @@ python -m venv .venv
    - Verifies interactive pagination transitions (`⏮️ First`, `⬅️ Prev`, `Next ➡️`, `Last ⏭️`).
    - Verifies in-memory TTL session cache hits (`from_cache: True`) on page revisits and cache bypass on `🔄 Refresh`.
    - Tests multi-page bulk exporter execution and download button generation.
+   - Tests Entity Relationships detection and 1-click drill-down (`🏢 Organization`, `👤 Client`, `🛍️ Purchases`, `📜 Lead History`) with `nav_breadcrumbs` stack traversal.

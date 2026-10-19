@@ -161,6 +161,109 @@ class TestStreamlitApp(unittest.TestCase):
         self.assertTrue(any("JSON" in b for b in dl_buttons))
         self.assertTrue(any("CSV" in b for b in dl_buttons))
 
+    @patch("crm_client.CRMClient.request")
+    def test_entity_inspection_detection_and_drill_down(self, mock_request):
+        """Verify that entity relations are detected and drill-down + breadcrumbs navigation works."""
+        mock_resp_lead = MagicMock(status_code=200, reason="OK")
+        mock_resp_lead.url = "https://crm.test/leads"
+        mock_resp_lead.json.return_value = {
+            "data": [{
+                "id": 5283,
+                "title": "BricsCAD Deal",
+                "status": "Chatting",
+                "customer": {"id": 6523, "name": "Shobron Zhuhri Mr"},
+                "organization": {"id": 9842, "company_name": "SKS Listrik Kalimantan, PT"},
+            }],
+            "meta": {"current_page": 1, "last_page": 1, "total": 1, "per_page": 25},
+        }
+
+        mock_resp_org = MagicMock(status_code=200, reason="OK")
+        mock_resp_org.url = "https://crm.test/organizations/9842"
+        mock_resp_org.json.return_value = {
+            "data": {
+                "id": 9842,
+                "company_name": "SKS Listrik Kalimantan, PT",
+                "clients": [{"id": 6523, "pic_name": "Shobron Zhuhri Mr"}],
+            }
+        }
+
+        mock_request.side_effect = [mock_resp_lead, mock_resp_org, mock_resp_lead]
+
+        at = AppTest.from_file(APP_PATH, default_timeout=20)
+        at.run()
+
+        # Select Leads (List) and fetch
+        at.sidebar.selectbox[0].select("Leads (List)")
+        at.run()
+        at.sidebar.button[0].click()
+        at.run()
+
+        self.assertEqual(at.session_state.selected_endpoint, "Leads (List)")
+
+        # Find View Org #9842 button
+        org_btns = [b for b in at.button if "View Org #9842" in b.label]
+        self.assertTrue(len(org_btns) > 0)
+
+        # Click drill down into organization
+        org_btns[0].click()
+        at.run()
+
+        self.assertEqual(at.session_state.selected_endpoint, "Organization (Detail by ID)")
+        self.assertEqual(at.session_state.org_id_input, "9842")
+        self.assertEqual(len(at.session_state.nav_breadcrumbs), 1)
+
+        # Verify breadcrumbs Back button exists and returns to Leads
+        back_btns = [b for b in at.button if "Back to" in b.label]
+        self.assertTrue(len(back_btns) > 0)
+        back_btns[0].click()
+        at.run()
+
+        self.assertEqual(at.session_state.selected_endpoint, "Leads (List)")
+        self.assertEqual(len(at.session_state.nav_breadcrumbs), 0)
+
+    @patch("crm_client.CRMClient.request")
+    def test_organization_detail_embedded_clients_drill_down(self, mock_request):
+        """Verify that organization detail renders embedded clients and allows 1-click drill-down."""
+        mock_resp_org = MagicMock(status_code=200, reason="OK")
+        mock_resp_org.url = "https://crm.test/organizations/8066"
+        mock_resp_org.json.return_value = {
+            "data": {
+                "id": 8066,
+                "company_name": "Rifqi Com",
+                "clients": [{"id": 5177, "pic_name": "Abdul Salam", "email": "as@test.com"}],
+            }
+        }
+
+        mock_resp_cli = MagicMock(status_code=200, reason="OK")
+        mock_resp_cli.url = "https://crm.test/clients/5177"
+        mock_resp_cli.json.return_value = {
+            "data": {
+                "id": 5177,
+                "pic_name": "Abdul Salam",
+                "organization": {"id": 8066, "company_name": "Rifqi Com"},
+            }
+        }
+
+        mock_request.side_effect = [mock_resp_org, mock_resp_cli]
+
+        at = AppTest.from_file(APP_PATH, default_timeout=20)
+        at.run()
+
+        at.sidebar.selectbox[0].select("Organization (Detail by ID)")
+        at.run()
+        at.sidebar.button[0].click()
+        at.run()
+
+        # Find View Client #5177 button in associated clients list
+        cli_btns = [b for b in at.button if "View Client #5177" in b.label]
+        self.assertTrue(len(cli_btns) > 0)
+
+        cli_btns[0].click()
+        at.run()
+
+        self.assertEqual(at.session_state.selected_endpoint, "Client (Detail by ID)")
+        self.assertEqual(at.session_state.client_id_input, "5177")
+        self.assertEqual(len(at.session_state.nav_breadcrumbs), 1)
 
 if __name__ == "__main__":
     unittest.main()
