@@ -27,6 +27,8 @@ st.markdown(
 # Initialize API Client
 client = CRMClient()
 
+CACHE_TTL_SECONDS = 300  # 5 minutes
+
 # Initialize session state for query caching and pagination
 if "last_response" not in st.session_state:
     st.session_state.last_response = None
@@ -36,6 +38,35 @@ if "page_number" not in st.session_state:
     st.session_state.page_number = 1
 if "trigger_fetch" not in st.session_state:
     st.session_state.trigger_fetch = False
+if "force_refresh" not in st.session_state:
+    st.session_state.force_refresh = False
+if "page_cache" not in st.session_state:
+    st.session_state.page_cache = {}
+
+
+def make_cache_key(endpoint: str, query_params: dict) -> str:
+    sorted_items = sorted((str(k), str(v)) for k, v in (query_params or {}).items() if v is not None)
+    return f"{endpoint.strip('/')}?{json.dumps(sorted_items)}"
+
+
+def get_from_cache(endpoint: str, query_params: dict):
+    key = make_cache_key(endpoint, query_params)
+    entry = st.session_state.page_cache.get(key)
+    if not entry:
+        return None
+    timestamp, meta, data = entry
+    if time.time() - timestamp > CACHE_TTL_SECONDS:
+        del st.session_state.page_cache[key]
+        return None
+    return meta, data
+
+
+def save_to_cache(endpoint: str, query_params: dict, meta: dict, data):
+    if len(st.session_state.page_cache) >= 100:
+        oldest_key = min(st.session_state.page_cache.keys(), key=lambda k: st.session_state.page_cache[k][0])
+        del st.session_state.page_cache[oldest_key]
+    key = make_cache_key(endpoint, query_params)
+    st.session_state.page_cache[key] = (time.time(), meta, data)
 
 
 def navigate_page(target_page: int):
@@ -47,6 +78,7 @@ def on_endpoint_change():
     st.session_state.page_number = 1
     st.session_state.last_response = None
     st.session_state.last_meta = None
+
 # Sidebar - Settings & Query Builder
 st.sidebar.title("⚡ CRM Explorer")
 st.sidebar.caption(f"Base URL: `{client.base_url}`")
@@ -115,33 +147,62 @@ elif endpoint_config["type"] == "custom":
     page = st.sidebar.number_input("Page", min_value=1, step=1, key="page_number")
     params = {"per_page": per_page, "page": page}
 
-# Fetch button
-fetch_clicked = st.sidebar.button("🚀 Fetch Data", type="primary", use_container_width=True)
+# Fetch and Refresh buttons in sidebar
+col_f1, col_f2 = st.sidebar.columns([3, 1])
+with col_f1:
+    fetch_clicked = st.button("🚀 Fetch Data", type="primary", use_container_width=True)
+with col_f2:
+    refresh_clicked = st.button("🔄", help="Force live reload from API (bypass cache)", use_container_width=True)
 
-if fetch_clicked or st.session_state.get("trigger_fetch"):
+is_force = refresh_clicked or st.session_state.get("force_refresh", False)
+if is_force:
+    st.session_state.force_refresh = False
+
+should_run = fetch_clicked or refresh_clicked or st.session_state.get("trigger_fetch", False)
+
+if should_run:
     st.session_state.trigger_fetch = False
-    with st.spinner(f"Querying `{endpoint_path}`..."):
-        start_time = time.time()
-        try:
-            resp = client.request(endpoint_path, params=params)
-            duration = round((time.time() - start_time) * 1000, 1)
 
-            st.session_state.last_meta = {
-                "url": resp.url,
-                "status_code": resp.status_code,
-                "reason": resp.reason,
-                "duration_ms": duration,
-                "endpoint_path": endpoint_path,
-                "params": dict(params),
-            }
+    cached_entry = None if is_force else get_from_cache(endpoint_path, params)
 
+    if cached_entry:
+        cached_meta, cached_data = cached_entry
+        st.session_state.last_meta = {
+            **cached_meta,
+            "duration_ms": 0.0,
+            "from_cache": True,
+        }
+        st.session_state.last_response = cached_data
+    else:
+        with st.spinner(f"Querying `{endpoint_path}`..."):
+            start_time = time.time()
             try:
-                st.session_state.last_response = resp.json()
-            except Exception:
-                st.session_state.last_response = resp.text
+                resp = client.request(endpoint_path, params=params)
+                duration = round((time.time() - start_time) * 1000, 1)
 
-        except Exception as e:
-            st.error(f"Request failed: {e}")
+                meta_dict = {
+                    "url": resp.url,
+                    "status_code": resp.status_code,
+                    "reason": resp.reason,
+                    "duration_ms": duration,
+                    "endpoint_path": endpoint_path,
+                    "params": dict(params),
+                    "from_cache": False,
+                }
+
+                try:
+                    resp_data = resp.json()
+                except Exception:
+                    resp_data = resp.text
+
+                st.session_state.last_meta = meta_dict
+                st.session_state.last_response = resp_data
+
+                if resp.status_code == 200:
+                    save_to_cache(endpoint_path, params, meta_dict, resp_data)
+
+            except Exception as e:
+                st.error(f"Request failed: {e}")
 
 # Main Content Area
 st.title("CRM API Explorer")
@@ -151,16 +212,18 @@ if st.session_state.last_response is not None:
     data = st.session_state.last_response
 
     # Telemetry metrics row
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns([1, 1.2, 1, 1, 0.8])
     with col1:
         if 200 <= meta["status_code"] < 300:
             st.metric("Status", f"{meta['status_code']} {meta['reason']}")
         else:
             st.metric("Status", f"{meta['status_code']} {meta['reason']}", delta="-Error", delta_color="inverse")
     with col2:
-        st.metric("Response Time", f"{meta['duration_ms']} ms")
+        if meta.get("from_cache"):
+            st.metric("Source", "⚡ In Cache (<1 ms)", help="Loaded instantly from 5-minute session cache without burning API quota.")
+        else:
+            st.metric("Response Time", f"{meta['duration_ms']} ms", help="Fetched live from CRM API.")
     with col3:
-        # Check if list count exists
         count = None
         if isinstance(data, list):
             count = len(data)
@@ -172,6 +235,13 @@ if st.session_state.last_response is not None:
         st.metric("Records Found", str(count) if count is not None else "1 (Object)")
     with col4:
         st.metric("Endpoint", f"/{meta['endpoint_path']}")
+    with col5:
+        st.markdown("<div style='padding-top: 10px;'>", unsafe_allow_html=True)
+        if st.button("🔄 Refresh", key="telemetry_refresh_btn", help="Force live reload from CRM API (bypasses cache)", use_container_width=True):
+            st.session_state.force_refresh = True
+            st.session_state.trigger_fetch = True
+            st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
 
     # Display Requested URL
     st.code(meta["url"], language="http")
