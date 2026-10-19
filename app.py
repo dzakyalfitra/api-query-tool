@@ -541,90 +541,238 @@ if st.session_state.last_response is not None:
 
     with tab_table:
         if table_records:
-            try:
-                df = pd.json_normalize(table_records)
+            clean_slug = meta["endpoint_path"].replace("/", "_")
+            bulk_key = f"bulk_{meta['endpoint_path']}"
+            cached_bulk_df = st.session_state.get(f"df_{bulk_key}")
+            meta_info = data.get("meta") if isinstance(data, dict) else None
+            last_page = int(meta_info.get("last_page", 1)) if meta_info else 1
+            total_records = meta_info.get("total") if meta_info else len(table_records)
+
+            # Filter & Search Panel
+            with st.container(border=True):
+                st.markdown("##### 🔎 Filter & Search")
+                scope_choices = ["📄 Current Page"]
+                if last_page > 1:
+                    scope_choices.append("🌐 All Records (Global)")
+
+                if len(scope_choices) > 1:
+                    f_head1, f_head2 = st.columns([1.5, 3.5])
+                    with f_head1:
+                        chosen_scope = st.radio(
+                            "Scope",
+                            scope_choices,
+                            horizontal=True,
+                            key=f"scope_radio_{clean_slug}",
+                        )
+                    with f_head2:
+                        if chosen_scope == "🌐 All Records (Global)":
+                            if cached_bulk_df is None:
+                                st.info(f"Global filter requires loading all {last_page} pages ({total_records:,} records).")
+                                if st.button("⚡ Sync All Records to Memory", type="primary", key=f"btn_sync_{clean_slug}"):
+                                    prog_bar = st.progress(0.0)
+                                    stat_txt = st.empty()
+                                    all_sync_recs = []
+                                    try:
+                                        for chunk, _, cur_p, tot_p in client.iter_pages(
+                                            endpoint=meta["endpoint_path"],
+                                            params=meta.get("params", {}),
+                                            per_page=100,
+                                        ):
+                                            all_sync_recs.extend(chunk)
+                                            prog_bar.progress(min(1.0, cur_p / max(1, tot_p)))
+                                            stat_txt.text(f"Syncing page {cur_p}/{tot_p} ({len(all_sync_recs):,} records)...")
+
+                                        synced_df = pd.json_normalize(all_sync_recs)
+                                        st.session_state[f"df_{bulk_key}"] = synced_df
+                                        st.session_state[bulk_key] = all_sync_recs
+                                        cached_bulk_df = synced_df
+                                        st.rerun()
+                                    except Exception as ex:
+                                        st.error(f"Sync error: {ex}")
+                            else:
+                                st.caption(f"⚡ **In Memory:** `{len(cached_bulk_df):,} total records` loaded. Ready for instant multi-filter.")
+                else:
+                    chosen_scope = "📄 Current Page"
+
+                # Pick source dataframe
+                if chosen_scope == "🌐 All Records (Global)" and cached_bulk_df is not None:
+                    df_source = cached_bulk_df.copy()
+                    source_label = f"all {len(df_source):,} global"
+                else:
+                    df_source = pd.json_normalize(table_records)
+                    source_label = f"{len(df_source):,} current page"
+
+                df_filtered = df_source.copy()
+                active_filters = []
+
+                if not df_source.empty:
+                    f_col1, f_col2, f_col3 = st.columns(3)
+
+                    # 1. Search Keyword
+                    with f_col1:
+                        kw = st.text_input(
+                            "🔍 Search Keyword",
+                            placeholder="Search any field...",
+                            key=f"kw_{clean_slug}",
+                        )
+                        if kw.strip():
+                            kw_clean = kw.strip()
+                            active_filters.append(f"Keyword: '{kw_clean}'")
+                            str_cols = df_filtered.select_dtypes(include=["object", "string"]).columns
+                            if len(str_cols) > 0:
+                                mask = False
+                                for col in str_cols:
+                                    mask = mask | df_filtered[col].astype(str).str.contains(kw_clean, case=False, na=False)
+                                df_filtered = df_filtered[mask]
+
+                    # 2. Industry or City filter
+                    with f_col2:
+                        if "industry" in df_source.columns:
+                            avail_ind = sorted([str(x) for x in df_source["industry"].dropna().unique() if str(x).strip()])
+                            if avail_ind:
+                                picked_ind = st.multiselect(
+                                    "🏢 Industry",
+                                    options=avail_ind,
+                                    placeholder="All Industries",
+                                    key=f"ind_{clean_slug}",
+                                )
+                                if picked_ind:
+                                    active_filters.append(f"Industry: {', '.join(picked_ind)}")
+                                    df_filtered = df_filtered[df_filtered["industry"].isin(picked_ind)]
+                        elif "city" in df_source.columns:
+                            avail_city = sorted([str(x) for x in df_source["city"].dropna().unique() if str(x).strip() and str(x).lower() != "nan"])
+                            if len(avail_city) > 1:
+                                picked_city = st.multiselect(
+                                    "📍 City",
+                                    options=avail_city,
+                                    placeholder="All Cities",
+                                    key=f"city_{clean_slug}",
+                                )
+                                if picked_city:
+                                    active_filters.append(f"City: {', '.join(picked_city)}")
+                                    df_filtered = df_filtered[df_filtered["city"].isin(picked_city)]
+
+                    # 3. Status filter
+                    with f_col3:
+                        if "status" in df_source.columns:
+                            avail_stat = sorted([str(x) for x in df_source["status"].dropna().unique() if str(x).strip()])
+                            if avail_stat:
+                                picked_stat = st.multiselect(
+                                    "📈 Status",
+                                    options=avail_stat,
+                                    placeholder="All Statuses",
+                                    key=f"stat_{clean_slug}",
+                                )
+                                if picked_stat:
+                                    active_filters.append(f"Status: {', '.join(picked_stat)}")
+                                    df_filtered = df_filtered[df_filtered["status"].isin(picked_stat)]
+
+                # Results Summary & Quick CSV Download Row
+                sub_col1, sub_col2 = st.columns([3, 1])
+                with sub_col1:
+                    if active_filters:
+                        st.caption(f"🎯 **Active Filters:** {' | '.join(active_filters)}")
+                        st.markdown(f"**Found {len(df_filtered):,} matching records** (from {source_label} records)")
+                    else:
+                        st.caption(f"Showing all {len(df_filtered):,} {source_label} records. Use filters above to narrow results.")
+                with sub_col2:
+                    if not df_filtered.empty:
+                        csv_data = df_filtered.to_csv(index=False).encode("utf-8")
+                        st.download_button(
+                            label=f"📥 Download Filtered CSV ({len(df_filtered):,})",
+                            data=csv_data,
+                            file_name=f"{clean_slug}_filtered_{int(time.time())}.csv",
+                            mime="text/csv",
+                            use_container_width=True,
+                            key=f"btn_dl_filt_{clean_slug}",
+                        )
+
+            # Render Table View
+            if not df_filtered.empty:
                 df_event = st.dataframe(
-                    df,
+                    df_filtered,
                     use_container_width=True,
                     height=450,
                     on_select="rerun",
                     selection_mode="single-row",
-                    key="table_df_widget",
+                    key=f"table_df_widget_{clean_slug}",
                 )
-                st.caption(f"Showing {len(df)} rows and {len(df.columns)} columns. Click any row to inspect relations below, or click headers to sort.")
+                st.caption(f"Showing {len(df_filtered)} rows and {len(df_filtered.columns)} columns. Click any row to inspect relations below, or click headers to sort.")
                 if hasattr(df_event, "selection") and df_event.selection and df_event.selection.rows:
-                    sel_idx = df_event.selection.rows[0]
-                    if 0 <= sel_idx < len(table_records):
-                        st.session_state["table_panel_record_selector"] = sel_idx
-            except Exception as e:
-                st.warning(f"Could not convert response to table automatically: {e}")
-                st.info("Please inspect the raw payload in the JSON Tree tab.")
+                    sel_row_idx = df_event.selection.rows[0]
+                    if 0 <= sel_row_idx < len(df_filtered):
+                        st.session_state["table_panel_record_selector"] = sel_row_idx
+
+                current_records_for_inspector = df_filtered.to_dict(orient="records")
+            else:
+                st.warning("No records matched your filter criteria.")
+                current_records_for_inspector = []
+
+            # Pagination Controls (only if viewing single page mode)
+            if chosen_scope == "📄 Current Page" and meta_info and "current_page" in meta_info and "last_page" in meta_info:
+                cur_p = max(1, int(meta_info.get("current_page", 1)))
+                last_p = max(1, int(meta_info.get("last_page", 1)))
+                total_recs = meta_info.get("total")
+
+                st.markdown("---")
+                nav_col1, nav_col2, nav_col3, nav_col4, nav_col5 = st.columns([1, 1.2, 2.5, 1.2, 1])
+
+                with nav_col1:
+                    st.button(
+                        "⏮️ First",
+                        key="btn_first_page",
+                        disabled=(cur_p <= 1),
+                        use_container_width=True,
+                        on_click=navigate_page,
+                        args=(1,),
+                    )
+
+                with nav_col2:
+                    st.button(
+                        "⬅️ Previous",
+                        key="btn_prev_page",
+                        disabled=(cur_p <= 1),
+                        use_container_width=True,
+                        on_click=navigate_page,
+                        args=(cur_p - 1,),
+                    )
+
+                with nav_col3:
+                    total_text = f" ({total_recs:,} records total)" if total_recs is not None else ""
+                    st.markdown(
+                        f"<div style='text-align: center; line-height: 2.2; font-weight: 500; font-size: 14px;'>"
+                        f"Page <b style='color: #00d26a;'>{cur_p}</b> of <b>{last_p}</b>{total_text}"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+
+                with nav_col4:
+                    st.button(
+                        "Next ➡️",
+                        key="btn_next_page",
+                        disabled=(cur_p >= last_p),
+                        use_container_width=True,
+                        on_click=navigate_page,
+                        args=(cur_p + 1,),
+                    )
+
+                with nav_col5:
+                    st.button(
+                        "Last ⏭️",
+                        key="btn_last_page",
+                        disabled=(cur_p >= last_p),
+                        use_container_width=True,
+                        on_click=navigate_page,
+                        args=(last_p,),
+                    )
+
+            # Prominent Entity Inspector below Table
+            if current_records_for_inspector:
+                st.markdown("---")
+                with st.container(border=True):
+                    render_entity_inspector(data, current_records_for_inspector, endpoint_config, key_prefix="table_panel")
         else:
             st.info("Response is not tabular or is empty. View the JSON Tree tab.")
-        # Pagination Controls below table
-        meta_info = data.get("meta") if isinstance(data, dict) else None
-        if meta_info and "current_page" in meta_info and "last_page" in meta_info:
-            cur_p = max(1, int(meta_info.get("current_page", 1)))
-            last_p = max(1, int(meta_info.get("last_page", 1)))
-            total_recs = meta_info.get("total")
-
-            st.markdown("---")
-            nav_col1, nav_col2, nav_col3, nav_col4, nav_col5 = st.columns([1, 1.2, 2.5, 1.2, 1])
-
-            with nav_col1:
-                st.button(
-                    "⏮️ First",
-                    key="btn_first_page",
-                    disabled=(cur_p <= 1),
-                    use_container_width=True,
-                    on_click=navigate_page,
-                    args=(1,),
-                )
-
-            with nav_col2:
-                st.button(
-                    "⬅️ Previous",
-                    key="btn_prev_page",
-                    disabled=(cur_p <= 1),
-                    use_container_width=True,
-                    on_click=navigate_page,
-                    args=(cur_p - 1,),
-                )
-
-            with nav_col3:
-                total_text = f" ({total_recs:,} records total)" if total_recs is not None else ""
-                st.markdown(
-                    f"<div style='text-align: center; line-height: 2.2; font-weight: 500; font-size: 14px;'>"
-                    f"Page <b style='color: #00d26a;'>{cur_p}</b> of <b>{last_p}</b>{total_text}"
-                    f"</div>",
-                    unsafe_allow_html=True,
-                )
-
-            with nav_col4:
-                st.button(
-                    "Next ➡️",
-                    key="btn_next_page",
-                    disabled=(cur_p >= last_p),
-                    use_container_width=True,
-                    on_click=navigate_page,
-                    args=(cur_p + 1,),
-                )
-
-            with nav_col5:
-                st.button(
-                    "Last ⏭️",
-                    key="btn_last_page",
-                    disabled=(cur_p >= last_p),
-                    use_container_width=True,
-                    on_click=navigate_page,
-                    args=(last_p,),
-                )
-
-        if table_records:
-            st.markdown("---")
-            with st.container(border=True):
-                render_entity_inspector(data, table_records, endpoint_config, key_prefix="table_panel")
-
     with tab_inspect:
         render_entity_inspector(data, table_records, endpoint_config, key_prefix="tab_inspect")
 

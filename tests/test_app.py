@@ -264,6 +264,85 @@ class TestStreamlitApp(unittest.TestCase):
         self.assertEqual(at.session_state.selected_endpoint, "Client (Detail by ID)")
         self.assertEqual(at.session_state.client_id_input, "5177")
         self.assertEqual(len(at.session_state.nav_breadcrumbs), 1)
+    @patch("crm_client.CRMClient.request")
+    def test_filter_by_industry_and_keyword(self, mock_request):
+        """Verify that page-level industry and keyword filters narrow rows and offer filtered CSV download."""
+        mock_resp = MagicMock(status_code=200, reason="OK")
+        mock_resp.url = "https://crm.test/organizations"
+        mock_resp.json.return_value = {
+            "data": [
+                {"id": 1, "company_name": "Bali Resort", "industry": "Hospitality", "city": "Denpasar"},
+                {"id": 2, "company_name": "Bank Mega", "industry": "Banking", "city": "Jakarta"},
+                {"id": 3, "company_name": "Tech Corp", "industry": "Technology", "city": "Bandung"},
+            ],
+            "meta": {"current_page": 1, "last_page": 2, "total": 6, "per_page": 3},
+        }
+        mock_request.return_value = mock_resp
+
+        at = AppTest.from_file(APP_PATH, default_timeout=20)
+        at.run()
+        at.sidebar.button[0].click()
+        at.run()
+
+        # Total 3 initial rows
+        self.assertEqual(len(at.dataframe[0].value), 3)
+
+        # Select 'Hospitality' from Industry multiselect
+        ind_ms = [m for m in at.multiselect if "Industry" in m.label][0]
+        self.assertIn("Hospitality", ind_ms.options)
+        ind_ms.select("Hospitality")
+        at.run()
+
+        # Filtered to 1 row
+        self.assertEqual(len(at.dataframe[0].value), 1)
+        self.assertEqual(at.dataframe[0].value.iloc[0]["company_name"], "Bali Resort")
+
+        # Filtered CSV button is present
+        dl_btns = [b for b in at.download_button if "Filtered CSV" in b.label]
+        self.assertEqual(len(dl_btns), 1)
+
+    @patch("crm_client.CRMClient.iter_pages")
+    @patch("crm_client.CRMClient.request")
+    def test_global_search_sync_and_filter(self, mock_request, mock_iter):
+        """Verify that global scope syncs all pages into memory and filters across the complete dataset."""
+        mock_resp = MagicMock(status_code=200, reason="OK")
+        mock_resp.url = "https://crm.test/organizations"
+        mock_resp.json.return_value = {
+            "data": [{"id": 1, "company_name": "P1 Org", "industry": "Other"}],
+            "meta": {"current_page": 1, "last_page": 2, "total": 2, "per_page": 1},
+        }
+        mock_request.return_value = mock_resp
+
+        mock_iter.return_value = iter([
+            ([{"id": 1, "company_name": "Hotel Bali", "industry": "Hospitality"}], {}, 1, 2),
+            ([{"id": 2, "company_name": "Bank Central", "industry": "Banking"}], {}, 2, 2),
+        ])
+
+        at = AppTest.from_file(APP_PATH, default_timeout=20)
+        at.run()
+        at.sidebar.button[0].click()
+        at.run()
+
+        # Select Global Scope
+        scope_radio = [r for r in at.radio if "Scope" in r.label or "scope" in r.key][0]
+        scope_radio.set_value("🌐 All Records (Global)")
+        at.run()
+
+        # Trigger in-memory sync
+        sync_btn = [b for b in at.button if "Sync All Records" in b.label][0]
+        sync_btn.click()
+        at.run()
+
+        # Consolidated records
+        self.assertEqual(len(at.dataframe[0].value), 2)
+
+        # Filter by Hospitality
+        ind_ms = [m for m in at.multiselect if "Industry" in m.label][0]
+        ind_ms.select("Hospitality")
+        at.run()
+
+        self.assertEqual(len(at.dataframe[0].value), 1)
+        self.assertEqual(at.dataframe[0].value.iloc[0]["company_name"], "Hotel Bali")
 
 if __name__ == "__main__":
     unittest.main()

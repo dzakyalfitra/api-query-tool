@@ -39,10 +39,11 @@ CRM_SECRET_KEY=your_actual_x_secret_key
 
 ## 1. Web Dashboard Features (`app.py`)
 
-- **Interactive Tables**: Sort, filter, search, and resize columns on returned lists.
+- **Interactive Tables & Multi-Column Filtering**: Instant in-memory filtering by `🏢 Industry` (Hospitality, Tech, Banking, etc.), `📈 Status`, `📍 City`, and global keyword search.
+- **🌐 Global Cross-CRM Search**: 1-click sync pulling the entire dataset into memory for instantaneous ($<5$ ms) multi-page filtering and targeted CSV exports.
 - **🔗 Entity Deep Inspector & Breadcrumbs**: Click through linked entities (`🏢 Organizations`, `👤 Clients`, `🛍️ Purchases`, `📜 Lead Histories`) directly without manual copy-pasting or losing navigation context.
 - **Collapsible JSON Tree**: Inspect nested response fields without terminal clutter.
-- **1-Click Export**: Download any query result as formatted `.json` or `.csv`.
+- **1-Click Export**: Download filtered results, current page, or full bulk dumps as formatted `.json` or `.csv`.
 - **Configurable Pagination**: Adjust `per_page` (default: 25) and `page` in the sidebar or use table buttons.
 Manual command:
 ```powershell
@@ -72,7 +73,7 @@ For quick command-line querying without opening a browser:
 
 ## 3. Running Automated Tests
 
-Run the zero-dependency test suite (17 unit and headless integration tests):
+Run the zero-dependency test suite (19 unit and headless integration tests):
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
