@@ -132,6 +132,7 @@ if fetch_clicked or st.session_state.get("trigger_fetch"):
                 "reason": resp.reason,
                 "duration_ms": duration,
                 "endpoint_path": endpoint_path,
+                "params": dict(params),
             }
 
             try:
@@ -269,7 +270,7 @@ if st.session_state.last_response is not None:
             st.code(str(data))
 
     with tab_download:
-        st.subheader("Export Options")
+        st.subheader("Current Page Export")
         col_dl1, col_dl2 = st.columns(2)
 
         clean_slug = meta["endpoint_path"].replace("/", "_")
@@ -277,9 +278,9 @@ if st.session_state.last_response is not None:
 
         with col_dl1:
             st.download_button(
-                label="📥 Download JSON",
+                label="📥 Download Current Page (JSON)",
                 data=json_str,
-                file_name=f"{clean_slug}_{int(time.time())}.json",
+                file_name=f"{clean_slug}_page_{st.session_state.page_number}_{int(time.time())}.json",
                 mime="application/json",
                 use_container_width=True,
             )
@@ -290,9 +291,9 @@ if st.session_state.last_response is not None:
                     df = pd.json_normalize(table_records)
                     csv_data = df.to_csv(index=False).encode("utf-8")
                     st.download_button(
-                        label="📥 Download CSV",
+                        label="📥 Download Current Page (CSV)",
                         data=csv_data,
-                        file_name=f"{clean_slug}_{int(time.time())}.csv",
+                        file_name=f"{clean_slug}_page_{st.session_state.page_number}_{int(time.time())}.csv",
                         mime="text/csv",
                         use_container_width=True,
                     )
@@ -301,6 +302,79 @@ if st.session_state.last_response is not None:
             else:
                 st.button("CSV Download Unavailable (Not tabular)", disabled=True, use_container_width=True)
 
+        # Bulk Export (All Pages)
+        meta_info = data.get("meta") if isinstance(data, dict) else None
+        last_page = int(meta_info.get("last_page", 1)) if meta_info else 1
+        total_records = meta_info.get("total") if meta_info else None
+
+        if meta_info and last_page > 1:
+            st.markdown("---")
+            st.subheader("Bulk Export (All Pages)")
+            total_label = f" ({total_records:,} total records)" if total_records is not None else ""
+            st.caption(f"Fetch all pages across **{last_page} pages**{total_label} using connection pooling and safe rate-limit pacing.")
+
+            bulk_key = f"bulk_{meta['endpoint_path']}"
+            if bulk_key not in st.session_state:
+                st.session_state[bulk_key] = None
+
+            col_b1, col_b2 = st.columns([2, 1])
+            with col_b1:
+                start_bulk = st.button("⚡ Fetch All Pages for Download", type="primary", use_container_width=True, key="btn_start_bulk")
+            with col_b2:
+                max_p = st.number_input("Max Pages to Fetch (0 for all)", min_value=0, max_value=last_page, value=0, key="bulk_max_pages")
+
+            if start_bulk:
+                prog_bar = st.progress(0.0)
+                status_txt = st.empty()
+                all_bulk_records = []
+                target_pages = max_p if max_p > 0 else last_page
+
+                try:
+                    for chunk, chunk_meta, cur_p, total_p in client.iter_pages(
+                        endpoint=meta["endpoint_path"],
+                        params=meta.get("params", {}),
+                        per_page=100,
+                        max_pages=target_pages,
+                    ):
+                        all_bulk_records.extend(chunk)
+                        pct = min(1.0, cur_p / target_pages)
+                        prog_bar.progress(pct)
+                        status_txt.text(f"Fetched page {cur_p} of {target_pages} ({len(all_bulk_records):,} records collected)...")
+
+                    prog_bar.progress(1.0)
+                    status_txt.success(f"Successfully collected {len(all_bulk_records):,} total records from {target_pages} pages!")
+                    st.session_state[bulk_key] = all_bulk_records
+                except Exception as ex:
+                    st.error(f"Bulk fetch interrupted: {ex}")
+
+            if st.session_state.get(bulk_key):
+                bulk_records = st.session_state[bulk_key]
+                st.markdown(f"**Ready for Download: {len(bulk_records):,} records**")
+                col_b_dl1, col_b_dl2 = st.columns(2)
+                with col_b_dl1:
+                    b_json = json.dumps(bulk_records, indent=2, ensure_ascii=False)
+                    st.download_button(
+                        label=f"📥 Download All JSON ({len(bulk_records):,} items)",
+                        data=b_json,
+                        file_name=f"all_{clean_slug}_{int(time.time())}.json",
+                        mime="application/json",
+                        use_container_width=True,
+                        key="btn_dl_all_json",
+                    )
+                with col_b_dl2:
+                    try:
+                        b_df = pd.json_normalize(bulk_records)
+                        b_csv = b_df.to_csv(index=False).encode("utf-8")
+                        st.download_button(
+                            label=f"📥 Download All CSV ({len(bulk_records):,} rows)",
+                            data=b_csv,
+                            file_name=f"all_{clean_slug}_{int(time.time())}.csv",
+                            mime="text/csv",
+                            use_container_width=True,
+                            key="btn_dl_all_csv",
+                        )
+                    except Exception:
+                        st.button("CSV Download Unavailable", disabled=True, use_container_width=True)
 else:
     st.info("👈 Select an endpoint and parameters in the sidebar, then click **Fetch Data** to query the API.")
 
